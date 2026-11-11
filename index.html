@@ -1,0 +1,243 @@
+<!DOCTYPE html>
+<!--
+  【GitHub Pages側】カメラページ
+-->
+<html lang="ja">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>QRコード受付システム開発-QRコードリーダー</title>
+    <style>
+      /* QRコードリーダー関連の要素を格納したコンテナの書式設定 */
+      .container {
+        max-width: 500px;
+        margin: 0 auto;
+        padding: 1rem;
+        background: #fff;
+        border-radius: 8px;
+        box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+      }
+
+      /* QRコードリーダーのラベルを格納するコンテナの書式設定 */
+      .label-container {
+        max-width: 480px;
+        margin: 0 auto;
+        text-align: center;
+        font-size: 28px;
+      }
+
+      /* QRコードリーダー表示用枠の書式設定 */
+      #reader {
+        width: 100%;
+        max-width: 500px;
+        aspect-ratio: 1 / 1;
+        margin: 0 auto;
+        border: 1px solid #ccc;
+        border-radius: 8px;
+        position: relative;
+        background: transparent;
+        overflow: hidden;
+      }
+
+      /* QRコードリーダーのスキャン画面の書式設定 */
+      #reader video {
+        width: 100%;
+        height: 100%;
+        object-fit: cover;
+        border-radius: 8px;
+        display: block;
+        background: #000;
+      }
+
+      /* ボタン要素を格納するコンテナの書式設定 */
+      .button-container {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 1rem;
+        max-width: 500px;
+        margin: 0 auto;
+        padding: 1rem;
+        justify-content: center;
+      }
+
+      /* 開始・停止ボタン用の書式設定 */
+      .scan-button {
+        flex: 1 1 45%;
+        height: 80px;
+        font-size: 1.2rem;
+        min-width: 120px;
+      }
+    </style>
+  </head>
+
+  <body>
+    <div class="container">
+      <div class="label-container">QRコードリーダー</div>
+      <div id="reader"></div>
+
+      <div class="button-container">
+        <button id="start" class="scan-button">スキャン開始</button>
+        <button id="stop" class="scan-button">スキャン停止</button>
+      </div>
+
+      <div id="result"></div>
+    </div>
+    <script src="https://unpkg.com/html5-qrcode@2.3.8/html5-qrcode.min.js"></script>
+    <script>
+      // 受付画面（GAS）との接続設定 ---------------------------------
+      // 受付画面が開くときに付けてくる「送り先」（GAS画面のドメイン）
+      const gasOrigin = new URLSearchParams(location.search).get('origin') || '';
+      // 受付画面から開かれたか（opener があり、送り先がGoogleのドメインか）
+      const isOpenedFromGas =
+        !!window.opener &&
+        /^https:\/\/[a-z0-9-]+\.googleusercontent\.com$/.test(gasOrigin);
+      // --------------------------------------------------------------------
+
+      let currentText = '';
+      let audioCtx;
+
+      // オーディオコンテキストの初期化
+      const initAudio = () => {
+        if (!audioCtx) {
+          audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+        }
+      };
+
+      // 画面にメッセージを表示する関数
+      const append = (text) => {
+        document.querySelector('#result').innerHTML = text;
+      };
+
+      // QR読み取り成功音声を流す関数
+      const beep = () => {
+        initAudio();
+        const oscillator = audioCtx.createOscillator();
+        const gainNode = audioCtx.createGain();
+
+        // 音量調整
+        gainNode.gain.value = 0.1;
+
+        // 波形指定
+        oscillator.type = 'square';
+
+        // ノード接続
+        oscillator.connect(gainNode);
+        gainNode.connect(audioCtx.destination);
+
+        const startTime = audioCtx.currentTime;
+
+        // 周波数を時間ごとに切り替え
+        oscillator.frequency.setValueAtTime(523, startTime);
+        oscillator.frequency.setValueAtTime(659, startTime + 0.1);
+        oscillator.frequency.setValueAtTime(880, startTime + 0.2);
+        oscillator.start();
+        oscillator.stop(startTime + 0.3);
+      }
+
+      // QRコード読み取り成功時
+      const onScanSuccess = (decodedText, decodedResult) => {
+        console.log('onScanSuccess', decodedText, currentText);
+
+        // 同じQRの連続読み取り防止
+        if (currentText !== decodedText) {
+          currentText = decodedText;
+
+          // 受付画面が閉じられていたら送れない
+          if (!window.opener || window.opener.closed) {
+            append('受付画面が閉じられています。受付画面から開き直してください');
+            return;
+          }
+
+          // スキャンしたら音鳴らす
+          beep();
+          append('送信中…');
+
+          // 受付画面が google.script.run.onScan() を呼び、結果を送り返してくる
+          window.opener.postMessage({ type: 'qr', qr: decodedText }, gasOrigin);
+
+          // 一定時間後に再受付可能にする（3秒）
+          setTimeout(() => {
+            currentText = '';
+          }, 3000);
+        }
+      };
+
+      // 受付画面（GAS）から結果を受け取って表示する
+      window.addEventListener('message', (e) => {
+        if (e.origin !== gasOrigin) return;             // 送信元を確認
+        if (!e.data || e.data.type !== 'result') return;
+        append(e.data.message);                         // GAS側の onScan の戻り値（またはエラー）
+      });
+
+      // QRコードリーダーオブジェクト
+      const qrcodeReader = new Html5Qrcode("reader");
+      // 開始ボタン
+      const startBtn = document.getElementById("start");
+      // 停止ボタン
+      const stopBtn = document.getElementById("stop");
+
+      // 幅の上限の設定
+      const width = Math.min(window.innerWidth * 0.9, 480);
+      // QRコードリーダーの設定（fps: スキャン頻度，qrbox: スキャン範囲サイズ）
+      const config = {fps: 10, qrbox: width * 0.7};
+      // カメラ設定（環境カメラ＝背面カメラを指定）
+      const camera = {facingMode : "environment"}
+
+      // QRコードリーダーの状態を表す定数
+      const STATE = {
+        SCANNING: "scanning",
+        STOPPED: "stopped"
+      };
+
+      // 画面の初期状態（スキャン開始ボタンのみ表示）
+      toggleButtonDisplay(STATE.STOPPED);
+
+      // 付画面から開かれていない場合は案内を出す
+      if (!isOpenedFromGas) {
+        append('受付画面の「カメラを開く」から開いてください');
+      }
+
+      // スキャン開始ボタンにクリック時のアクションを追加：QRコードリーダー起動
+      startBtn.addEventListener("click", () => {
+        // 受付画面から開かれていなければ起動しない
+        if (!isOpenedFromGas) {
+          append('受付画面の「カメラを開く」から開いてください');
+          return;
+        }
+
+        initAudio();
+
+        qrcodeReader.start(camera, config, onScanSuccess)
+          .then(() => {
+            append('');
+            // スキャン停止ボタンが表示されるよう切り替え
+            toggleButtonDisplay(STATE.SCANNING);
+          })
+          .catch((err) => {
+            append('カメラを起動できません：' + err);
+          });
+      })
+      // スキャン停止ボタンにクリック時のアクションを追加：QRコードリーダー停止
+      stopBtn.addEventListener("click", () => {
+        qrcodeReader.stop();
+
+        // スキャン開始ボタンが表示されるよう切り替え
+        toggleButtonDisplay(STATE.STOPPED);
+      })
+
+      // ボタン表示の切り替え
+      function toggleButtonDisplay(state){
+        switch (state){
+          case STATE.SCANNING:
+            startBtn.style.display = "none";
+            stopBtn.style.display = "inline-block";
+            break;
+          case STATE.STOPPED:
+            startBtn.style.display = "inline-block";
+            stopBtn.style.display = "none";
+            break;
+        }
+      }
+    </script>
+  </body>
+</html>
